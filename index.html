@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packing List Weight Extractor</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+.status{font-size:13px;color:var(--text-secondary);margin-top:12px}.file-list{margin-top:12px;color:var(--text-secondary);font-size:13px}.drop-zone{padding:24px;cursor:pointer;transition:.15s}.drop-zone.dragover{border-color:var(--accent);background:#eef6ff}.drop-zone-content{padding:20px}.drop-zone-title{margin-bottom:8px}.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.summary-value{font-size:28px;font-weight:700;margin-top:8px}.table-wrapper{border-radius:12px;border:1px solid var(--border-light)}.table-wrapper table{min-width:760px}.total-row td{border-top:2px solid #c7d7ee}.empty{text-align:center!important;color:var(--text-secondary);padding:30px!important}.btn:disabled{opacity:.5;cursor:not-allowed}.action-bar{flex-wrap:wrap}.small-note{font-size:12px;color:var(--text-secondary);margin-top:14px;line-height:1.5}.file-cell{text-align:left;max-width:260px;overflow-wrap:anywhere}
+@media(max-width:768px){.summary-grid{grid-template-columns:1fr}.portal-title{font-size:22px}.card{padding:20px}}
+</style>
+</head>
+<body>
+<header class="portal-header"><div class="container portal-header-inner"><h1 class="portal-title">Packing List Extractor</h1><div class="portal-nav"><button class="nav-btn active" type="button">PDF Tools</button></div></div></header>
+<main class="page-section"><div class="container"><section class="card">
+<div class="card-title">Extract Packing List Details</div>
+<div class="card-description">Upload or drag multiple packing-list PDFs. The app extracts PL#, REMARK, Gross Weight and Net Weight, then calculates totals automatically.</div>
+<div id="dropZone" class="drop-zone" role="button" tabindex="0" aria-label="Choose PDF files">
+<div class="drop-zone-content"><div style="font-size:38px;margin-bottom:10px">⇧</div><div class="drop-zone-title">Drop PDF files here</div><div class="drop-zone-subtitle">or click to select multiple PDF files</div><div class="small-note">Files are processed locally in your browser and are not uploaded to a server.</div></div>
+</div>
+<input id="fileInput" type="file" accept="application/pdf,.pdf" multiple hidden>
+<div id="status" class="status" aria-live="polite">No files processed yet.</div><div id="fileList" class="file-list"></div>
+<div class="action-bar"><button id="chooseBtn" class="btn btn-primary" type="button">Select PDF Files</button><button id="clearBtn" class="btn btn-outline" type="button">Clear Table</button></div>
+<div class="summary-grid">
+<div class="summary-card"><div>Total Gross Weight</div><div class="summary-value" id="grossTotal">0.00 kg</div></div>
+<div class="summary-card"><div>Total Net Weight</div><div class="summary-value" id="netTotal">0.00 kg</div></div>
+</div>
+<div class="table-wrapper"><table><thead><tr><th>No.</th><th>File Name</th><th>PL#</th><th>REMARK</th><th>GROSS WGT (kg)</th><th>NET WGT (kg)</th></tr></thead><tbody id="results"><tr><td class="empty" colspan="6">No data yet. Add PDF files to begin.</td></tr></tbody></table></div>
+<p class="small-note">Weight values are taken from the PDF's TOTAL section when available; otherwise, the app attempts to use the listed weight values. Please verify extracted values against the source document, especially if a PDF uses a different layout.</p>
+</section></div></main>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const $=id=>document.getElementById(id);
+let rows=[];
+const numFrom = s => { const m=String(s||'').replace(/,/g,'').match(/-?\d+(?:\.\d+)?/); return m?Number(m[0]):null; };
+function clean(s){return String(s||'').replace(/\s+/g,' ').trim();}
+function extractFields(text){
+  const t=text.replace(/\u00a0/g,' ').replace(/[ \t]+/g,' ');
+  let pl='';
+  let m=t.match(/PL\s*#\s*:?\s*([A-Z0-9][A-Z0-9-]+)/i);
+  if(m) pl=m[1];
+  // Prefer the value printed in the TOTAL section.
+  let gross=null, net=null;
+  const totalIdx=t.search(/\bTOTAL\b/i);
+  const tail=totalIdx>=0?t.slice(totalIdx):t;
+  m=tail.match(/GROSS\s*WGT\s*:?\s*([0-9,]+(?:\.[0-9]+)?)\s*(?:kg|kgs)?/i);
+  if(m) gross=Number(m[1].replace(/,/g,''));
+  m=tail.match(/NET\s*WGT\s*:?\s*([0-9,]+(?:\.[0-9]+)?)\s*(?:kg|kgs)?/i);
+  if(m) net=Number(m[1].replace(/,/g,''));
+  if(gross===null){m=t.match(/GROSS\s*WGT[\s\S]{0,100}?([0-9,]+(?:\.[0-9]+)?)\s*kg/i);if(m)gross=Number(m[1].replace(/,/g,''));}
+  if(net===null){m=t.match(/NET\s*WGT[\s\S]{0,100}?([0-9,]+(?:\.[0-9]+)?)\s*kg/i);if(m)net=Number(m[1].replace(/,/g,''));}
+  // REMARK is often a tracking/reference code and may wrap across PDF text lines.
+  let remark='';
+  const candidates=[...t.matchAll(/\b[A-Z]{2,}[A-Z0-9-]{5,}\b/g)].map(x=>x[0]);
+  remark=candidates.find(x=>/^(HK|HWH|HKG|HUA)/i.test(x))||'';
+  // If the PDF text places the REMARK value close to its heading, use that as fallback.
+  if(!remark){
+    m=t.match(/REMARK\s*:?\s*([A-Z0-9][A-Z0-9-]{4,})/i);
+    if(m)remark=m[1];
+  }
+  return {pl,remark,gross,net};
+}
+async function readPdf(file){
+  const bytes=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:bytes}).promise;
+  let text='';
+  for(let i=1;i<=pdf.numPages;i++){
+    const page=await pdf.getPage(i), content=await page.getTextContent();
+    // Sort by vertical position to reconstruct a more useful reading order.
+    const items=content.items.filter(x=>x.str&&x.str.trim()).sort((a,b)=>{
+      const ay=Math.round(a.transform[5]), by=Math.round(b.transform[5]);
+      return by-ay || a.transform[4]-b.transform[4];
+    });
+    text += items.map(x=>x.str).join(' ')+' ';
+  }
+  const fields=extractFields(text);
+  return {...fields,fileName:file.name,id:crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random()};
+}
+function fmt(v){return v===null||!Number.isFinite(v)?'—':v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function render(){
+  const body=$('results');
+  if(!rows.length) body.innerHTML='<tr><td class="empty" colspan="6">No data yet. Add PDF files to begin.</td></tr>';
+  else{
+    body.innerHTML='';
+    rows.forEach((r,i)=>{
+      const tr=document.createElement('tr');
+      [String(i+1),r.fileName,r.pl||'—',r.remark||'—',fmt(r.gross),fmt(r.net)].forEach((v,j)=>{
+        const td=document.createElement('td');td.textContent=v;if(j===1)td.className='file-cell';tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    const totalGross=rows.reduce((s,r)=>s+(Number.isFinite(r.gross)?r.gross:0),0);
+    const totalNet=rows.reduce((s,r)=>s+(Number.isFinite(r.net)?r.net:0),0);
+    const tr=document.createElement('tr');tr.className='total-row';
+    const vals=['','TOTAL','','',fmt(totalGross),fmt(totalNet)];
+    vals.forEach((v,i)=>{const td=document.createElement('td');td.textContent=v;if(i===1)td.style.textAlign='left';tr.appendChild(td);});body.appendChild(tr);
+  }
+  const g=rows.reduce((s,r)=>s+(Number.isFinite(r.gross)?r.gross:0),0), n=rows.reduce((s,r)=>s+(Number.isFinite(r.net)?r.net:0),0);
+  $('grossTotal').textContent=fmt(g)+' kg';$('netTotal').textContent=fmt(n)+' kg';
+}
+async function processFiles(fileList){
+ const files=Array.from(fileList).filter(f=>f.type==='application/pdf'||f.name.toLowerCase().endsWith('.pdf'));
+ if(!files.length){$('status').textContent='Please select PDF files.';return;}
+ let done=0, errors=[];
+ $('status').textContent=`Processing ${files.length} PDF file(s)…`;
+ for(const file of files){
+   try{const row=await readPdf(file);rows.push(row);done++;render();}
+   catch(e){errors.push(file.name);console.error(e);}
+   $('status').textContent=`Processed ${done} of ${files.length} file(s).`;
+ }
+ $('fileList').textContent=errors.length?'Could not read: '+errors.join(', '):`${done} file(s) added to the table.`;
+ if(errors.length)$('status').textContent+=` ${errors.length} file(s) failed; check that they are valid PDFs and contain selectable text.`;
+}
+$('chooseBtn').addEventListener('click',()=>$('fileInput').click());
+$('dropZone').addEventListener('click',()=>$('fileInput').click());
+$('dropZone').addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('fileInput').click();}});
+$('fileInput').addEventListener('change',e=>{processFiles(e.target.files);e.target.value='';});
+['dragenter','dragover'].forEach(ev=>$('dropZone').addEventListener(ev,e=>{e.preventDefault();$('dropZone').classList.add('dragover');}));
+['dragleave','drop'].forEach(ev=>$('dropZone').addEventListener(ev,e=>{e.preventDefault();$('dropZone').classList.remove('dragover');}));
+$('dropZone').addEventListener('drop',e=>processFiles(e.dataTransfer.files));
+$('clearBtn').addEventListener('click',()=>{rows=[];$('fileList').textContent='';$('status').textContent='Table cleared.';$('fileInput').value='';render();});
+</script>
+</body></html>
